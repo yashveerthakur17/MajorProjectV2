@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Banana Ripeness Detector</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>🍌 Banana Detector</h1>
+            <p class="subtitle">Point camera at bananas</p>
+        </header>
+
+        <!-- Counter Panel -->
+        <div class="counter-panel">
+            <div class="counter unripe">
+                <span class="count" id="count-unripe">0</span>
+                <span class="label">Unripe</span>
+            </div>
+            <div class="counter ripe">
+                <span class="count" id="count-ripe">0</span>
+                <span class="label">Ripe</span>
+            </div>
+            <div class="counter overripe">
+                <span class="count" id="count-overripe">0</span>
+                <span class="label">Overripe</span>
+            </div>
+            <div class="counter rotten">
+                <span class="count" id="count-rotten">0</span>
+                <span class="label">Rotten</span>
+            </div>
+        </div>
+
+        <!-- Camera View -->
+        <div class="camera-container">
+            <video id="video" autoplay playsinline></video>
+            <canvas id="overlay"></canvas>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <select id="cameraSelect" class="btn" style="padding: 10px; margin-right: 10px;">
+                <option value="">Loading cameras...</option>
+            </select>
+            <button id="switchCamera" class="btn">🔄 Refresh</button>
+            <div class="fps-display">
+                <span id="fps">0</span> FPS
+            </div>
+        </div>
+
+        <!-- Status -->
+        <div class="status" id="status">Initializing camera...</div>
+    </div>
+
+    <script>
+        // Elements
+        const video = document.getElementById('video');
+        const overlay = document.getElementById('overlay');
+        const ctx = overlay.getContext('2d');
+        const statusEl = document.getElementById('status');
+        const fpsEl = document.getElementById('fps');
+        const switchBtn = document.getElementById('switchCamera');
+        const cameraSelect = document.getElementById('cameraSelect');
+
+        // State
+        let currentStream = null;
+        let selectedDeviceId = null;
+        let isProcessing = false;
+        let lastFrameTime = Date.now();
+        let frameCount = 0;
+
+        // Colors for classes
+        const colors = {
+            'unripe': '#00ff00',
+            'ripe': '#ffff00',
+            'overripe': '#ff9900',
+            'rotten': '#ff0000'
+        };
+
+        // Enumerate available cameras
+        async function getCameras() {
+            try {
+                // Request permission first
+                await navigator.mediaDevices.getUserMedia({ video: true });
+
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(d => d.kind === 'videoinput');
+
+                cameraSelect.innerHTML = '';
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Camera ${index + 1}`;
+                    // Highlight DroidCam if found
+                    if (device.label.toLowerCase().includes('droid')) {
+                        option.text = '📱 ' + option.text;
+                    }
+                    cameraSelect.appendChild(option);
+                });
+
+                if (videoDevices.length > 0) {
+                    selectedDeviceId = videoDevices[0].deviceId;
+                    startCamera(selectedDeviceId);
+                }
+            } catch (err) {
+                statusEl.textContent = 'Camera access error: ' + err.message;
+                statusEl.className = 'status error';
+            }
+        }
+
+        // Start camera with specific device
+        async function startCamera(deviceId) {
+            try {
+                if (currentStream) {
+                    currentStream.getTracks().forEach(track => track.stop());
+                }
+
+                const constraints = {
+                    video: {
+                        deviceId: deviceId ? { exact: deviceId } : undefined,
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                };
+
+                currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = currentStream;
+
+                video.onloadedmetadata = () => {
+                    overlay.width = video.videoWidth;
+                    overlay.height = video.videoHeight;
+                    statusEl.textContent = 'Detecting...';
+                    statusEl.className = 'status active';
+                    detectLoop();
+                };
+            } catch (err) {
+                statusEl.textContent = 'Camera error: ' + err.message;
+                statusEl.className = 'status error';
+            }
+        }
+
+        // Camera selection change
+        cameraSelect.onchange = () => {
+            selectedDeviceId = cameraSelect.value;
+            startCamera(selectedDeviceId);
+        };
+
+        // Refresh cameras
+        switchBtn.onclick = () => {
+            getCameras();
+        };
+
+        // Detection loop
+        async function detectLoop() {
+            if (isProcessing) {
+                requestAnimationFrame(detectLoop);
+                return;
+            }
+
+            isProcessing = true;
+
+            try {
+                // Capture frame at reduced size for faster transfer
+                const maxWidth = 640;
+                const scale = Math.min(1, maxWidth / video.videoWidth);
+                const w = video.videoWidth * scale;
+                const h = video.videoHeight * scale;
+
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const tempCtx = canvas.getContext('2d');
+                tempCtx.drawImage(video, 0, 0, w, h);
+                const imageData = canvas.toDataURL('image/jpeg', 0.6);
+
+                // Send to server
+                const response = await fetch('/detect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: imageData })
+                });
+
+                const result = await response.json();
+
+                if (result.detections) {
+                    drawDetections(result.detections);
+                    updateCounters(result.detections);
+                }
+
+                // FPS calculation
+                frameCount++;
+                const now = Date.now();
+                if (now - lastFrameTime >= 1000) {
+                    fpsEl.textContent = frameCount;
+                    frameCount = 0;
+                    lastFrameTime = now;
+                }
+
+            } catch (err) {
+                console.error(err);
+            }
+
+            isProcessing = false;
+            requestAnimationFrame(detectLoop);
+        }
+
+        // Scale factor for bounding boxes (server processes at reduced size)
+        let scaleX = 1, scaleY = 1;
+
+        // Draw bounding boxes
+        function drawDetections(detections) {
+            ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+            // Calculate scale from reduced size back to display size
+            const maxWidth = 640;
+            const scale = Math.min(1, maxWidth / video.videoWidth);
+            scaleX = 1 / scale;
+            scaleY = 1 / scale;
+
+            detections.forEach(det => {
+                let [x1, y1, x2, y2] = det.box;
+                // Scale coordinates back to display size
+                x1 *= scaleX; y1 *= scaleY;
+                x2 *= scaleX; y2 *= scaleY;
+
+                const cls = det.class.toLowerCase();
+                const conf = det.confidence;
+                const color = colors[cls] || '#ffffff';
+
+                // Draw box
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 4;
+                ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+                // Draw label
+                const label = `${det.class}: ${(conf * 100).toFixed(0)}%`;
+                ctx.font = 'bold 18px Arial';
+                const textWidth = ctx.measureText(label).width;
+
+                ctx.fillStyle = color;
+                ctx.fillRect(x1, y1 - 28, textWidth + 10, 28);
+
+                ctx.fillStyle = '#000';
+                ctx.fillText(label, x1 + 5, y1 - 8);
+            });
+        }
+
+        // Update counters
+        function updateCounters(detections) {
+            const counts = { unripe: 0, ripe: 0, overripe: 0, rotten: 0 };
+
+            detections.forEach(det => {
+                const cls = det.class.toLowerCase();
+                if (counts.hasOwnProperty(cls)) {
+                    counts[cls]++;
+                }
+            });
+
+            document.getElementById('count-unripe').textContent = counts.unripe;
+            document.getElementById('count-ripe').textContent = counts.ripe;
+            document.getElementById('count-overripe').textContent = counts.overripe;
+            document.getElementById('count-rotten').textContent = counts.rotten;
+        }
+
+        // Start - enumerate cameras first
+        getCameras();
+    </script>
+</body>
+
+</html>
