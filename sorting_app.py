@@ -191,45 +191,53 @@ class FruitSortingSystem:
         self.total_rotten = 0
         self.total_good = 0
         self.start_time = time.time()
+        
+        # FPS tracking
+        self.fps = 0
+        self.frame_count = 0
+        self.fps_start_time = time.time()
     
     def process_frame(self, frame):
-        """Process a single frame using grid-based classification"""
+        """Process a single frame"""
         h, w = frame.shape[:2]
         
-        detections = []
+        # Detect objects
+        results = self.detector.predict(frame, conf=0.25, verbose=False)
         
-        if self.classifier:
-            # APPROACH 1: Full frame classification (single object in view)
-            # Best for conveyor belt with individual items
-            cls_result = self.classifier.predict(frame, verbose=False)
-            
-            if cls_result[0].probs is not None:
-                probs = cls_result[0].probs
-                class_name = cls_result[0].names[probs.top1]
-                confidence = float(probs.top1conf)
+        detections = []
+        if results[0].boxes is not None:
+            for box in results[0].boxes:
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
                 
-                # Only track if confidence is high enough
-                if confidence > 0.6:
-                    # Create a centered bounding box for tracking
-                    margin_x = int(w * 0.15)
-                    margin_y = int(h * 0.15)
-                    detections.append({
-                        'box': [margin_x, margin_y, w - margin_x, h - margin_y],
-                        'class': class_name,
-                        'confidence': confidence
-                    })
-        else:
-            # Fallback: Use COCO detector
-            results = self.detector.predict(frame, conf=0.3, verbose=False)
-            if results[0].boxes is not None:
-                for box in results[0].boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                    det_class = self.detector.names[int(box.cls[0])]
-                    detections.append({
-                        'box': [x1, y1, x2, y2],
-                        'class': det_class,
-                        'confidence': float(box.conf[0])
-                    })
+                # Ensure valid crop
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(w, x2), min(h, y2)
+                
+                if x2 > x1 and y2 > y1:
+                    crop = frame[y1:y2, x1:x2]
+                    
+                    if crop.size > 0 and self.classifier:
+                        # Classify
+                        cls_result = self.classifier.predict(crop, verbose=False)
+                        if cls_result[0].probs is not None:
+                            probs = cls_result[0].probs
+                            class_name = cls_result[0].names[probs.top1]
+                            confidence = float(probs.top1conf)
+                            
+                            if confidence > DETECTION_CONF:
+                                detections.append({
+                                    'box': [x1, y1, x2, y2],
+                                    'class': class_name,
+                                    'confidence': confidence
+                                })
+                    else:
+                        # No classifier - use detector class
+                        det_class = self.detector.names[int(box.cls[0])]
+                        detections.append({
+                            'box': [x1, y1, x2, y2],
+                            'class': det_class,
+                            'confidence': float(box.conf[0])
+                        })
         
         # Update tracker
         tracked_fruits = self.tracker.update(detections)
@@ -288,22 +296,26 @@ class FruitSortingSystem:
                 cv2.putText(frame, "PROCESSED", (int(fruit.x) - 40, int(fruit.y) + 50),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         
-        # Draw stats panel
-        cv2.rectangle(frame, (5, 5), (200, 110), (0, 0, 0), -1)
-        cv2.rectangle(frame, (5, 5), (200, 110), (255, 255, 255), 1)
+        # Draw stats panel (expanded for FPS)
+        cv2.rectangle(frame, (5, 5), (150, 100), (0, 0, 0), -1)
+        cv2.rectangle(frame, (5, 5), (150, 100), (255, 255, 255), 1)
         
-        cv2.putText(frame, f"Processed: {self.total_processed}", (15, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(frame, f"Rotten: {self.total_rotten}", (15, 55),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-        cv2.putText(frame, f"Good: {self.total_good}", (15, 80),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.putText(frame, f"Processed: {self.total_processed}", (10, 22),
+                   cv2.FONT_HERSHEY_DUPLEX, 0.4, (255, 255, 255), 1)
+        cv2.putText(frame, f"Rotten: {self.total_rotten}", (10, 40),
+                   cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 255), 1)
+        cv2.putText(frame, f"Good: {self.total_good}", (10, 58),
+                   cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 255, 0), 1)
         
         # Draw Arduino status
-        status = "CONNECTED" if self.arduino.connected else "SIMULATION"
+        status = "CONNECTED" if self.arduino.connected else "SIM"
         status_color = (0, 255, 0) if self.arduino.connected else (0, 165, 255)
-        cv2.putText(frame, f"Arduino: {status}", (15, 105),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, status_color, 1)
+        cv2.putText(frame, f"Arduino: {status}", (10, 76),
+                   cv2.FONT_HERSHEY_DUPLEX, 0.35, status_color, 1)
+        
+        # Draw FPS
+        cv2.putText(frame, f"FPS: {self.fps:.1f}", (10, 94),
+                   cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 255, 255), 1)
         
         # Draw instructions
         cv2.putText(frame, "q=quit | s=screenshot | c=clear | r=reset | +/- arm", 
@@ -344,6 +356,14 @@ class FruitSortingSystem:
             
             # Process frame
             frame = self.process_frame(frame)
+            
+            # Calculate FPS
+            self.frame_count += 1
+            elapsed = time.time() - self.fps_start_time
+            if elapsed >= 1.0:
+                self.fps = self.frame_count / elapsed
+                self.frame_count = 0
+                self.fps_start_time = time.time()
             
             # Display
             cv2.imshow('Fruit Sorting System', frame)
