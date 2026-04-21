@@ -1,0 +1,50 @@
+This is exactly what Git branching is for! Here's how to do it:
+
+Quick Git Branching Guide
+
+1. First, Initialize Git (if not already done)
+bash
+cd d:\VSCODE\MajorProjectV2
+git init
+git add .
+git commit -m "Working banana detection system"
+
+2. Create a New Branch for Your Feature
+bash
+# Create and switch to new branch
+git checkout -b feature/experimental-detection
+# Or in two steps:
+git branch feature/experimental-detection
+git checkout feature/experimental-detection
+
+3. Work on Your Feature
+Now you can freely modify code. The 
+main
+ branch stays untouched.
+
+bash
+# Check which branch you're on
+git branch
+# You'll see:
+#   main
+# * feature/experimental-detection  ← (you are here)
+
+4. If Feature Works → Merge Back
+bash
+git add .
+git commit -m "New detection feature works!"
+git checkout main
+git merge feature/experimental-detection
+5. If Feature Fails → Discard and Go Back
+bash
+# Discard all changes and go back to main
+git checkout main
+git branch -D feature/experimental-detection  # Delete failed branch
+
+
+Visual Summary
+main:           ●───●───●───●  (safe, working code)
+                         \
+feature-branch:           ●───●───●  (experimental)
+                              ↑
+                         You work here
